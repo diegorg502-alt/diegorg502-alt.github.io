@@ -407,19 +407,21 @@ h3{font-family:var(--fh);font-size:11px;font-weight:600;color:var(--text2);text-
     <div class="card"><div id="lrn-list"></div></div>
   </div>
 
-      </div>
-    </div>
-  </div>
-
   <!-- AJUSTES -->
   <div class="view" id="view-ajustes">
-    <h1 style="margin-bottom:6px">Configuración de horarios</h1>
-    <p style="color:var(--text2);font-size:13px;margin-bottom:20px">Define tus bloques de trabajo. El sistema calcula automáticamente el tiempo libre entre reuniones y tareas.</p>
+    <h1 style="margin-bottom:6px">Horario de trabajo</h1>
+    <p style="color:var(--text2);font-size:13px;margin-bottom:20px">Define tus bloques de trabajo disponibles. El sistema descuenta reuniones automáticamente y te muestra el tiempo libre real cada día.</p>
+    <div class="card" style="margin-bottom:12px">
+      <h2>Resumen semanal</h2>
+      <div id="schedule-summary" style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px"></div>
+    </div>
     <div class="card">
+      <h2>Editar bloques por día</h2>
       <div class="schedule-editor" id="schedule-editor"></div>
-      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px">
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center">
         <button class="btn-primary" onclick="saveSchedule()" style="max-width:160px">Guardar horarios</button>
         <button class="gcal-btn" onclick="resetSchedule()">Restaurar por defecto</button>
+        <span style="font-size:11px;color:var(--text3);margin-left:8px">Los cambios se aplican inmediatamente en toda la app</span>
       </div>
     </div>
   </div>
@@ -488,9 +490,9 @@ let learned = LS('dg3_learned',{});
 
 if(!recs.length){
   recs=[
-    {id:'r1',name:'Estrategia de contenidos orgánico',fromDay:1,toDay:10,hours:4,client:''},
+    {id:'r1',name:'Estrategia de contenidos orgánico',fromDay:1,toDay:10,hours:2,client:''},
     {id:'r2',name:'Preparar anuncios de publicidad',fromDay:10,toDay:20,hours:4,client:''},
-    {id:'r3',name:'Feedback 3 conv. setting + 3 llamadas venta no convertidas',fromDay:20,toDay:30,hours:4,client:''}
+    {id:'r3',name:'Feedback 3 conv. setting + 3 llamadas venta no convertidas',fromDay:20,toDay:30,hours:2,client:''}
   ];
   SS('dg3_recs',recs);
 }
@@ -1033,29 +1035,66 @@ function deleteRec(id){recs=recs.filter(r=>r.id!==id);save();renderRecurrents()}
 function createFromRec(id){
   const r=recs.find(x=>x.id===id);if(!r)return;
   const targets=r.client?[clientById(r.client)]:CLIENTS;
-  // Find first available day in the period for each client
   const today=new Date();
-  const day=today.getDate();
-  let assignDate=todayStr();
-  // Try to find a day in period that has capacity
-  for(let d=Math.max(day,r.fromDay);d<=r.toDay;d++){
-    const dd=new Date(today.getFullYear(),today.getMonth(),d);
+  const currentDay=today.getDate();
+  const year=today.getFullYear();
+  const month=today.getMonth();
+
+  // Build list of available working days in the period (from today or fromDay, whichever is later)
+  const startDay=Math.max(currentDay,r.fromDay);
+  const workingDays=[];
+  for(let d=startDay;d<=r.toDay;d++){
+    const dd=new Date(year,month,d);
     const ds=dateStr(dd);
     const freeH=dayH(dd.getDay());
-    const used=assignedH(ds);
-    if(freeH>0&&used+r.hours<=freeH){assignDate=ds;break}
+    if(freeH>0)workingDays.push(ds);
   }
-  targets.forEach((c,i)=>{
-    tasks.push({
+
+  if(!workingDays.length){
+    alert('No hay días laborables disponibles en el período.');return;
+  }
+
+  // Rotating start: use a seed based on month+recurrent id so each month starts distinto
+  const seed=(month+parseInt(id.replace(/\D/g,'').slice(-2)||'0',10))%targets.length;
+  const rotatedTargets=[...targets.slice(seed),...targets.slice(0,seed)];
+
+  // Assign 1 client per day, cycling through working days
+  const created=[];
+  const dayTaskCount={};// track how many rec tasks per day to avoid stacking
+
+  rotatedTargets.forEach((c,i)=>{
+    // Find a day that: has capacity AND doesn't already have a task from this recurrent
+    let assigned=null;
+    for(let di=i;di<workingDays.length+i;di++){
+      const ds=workingDays[di%workingDays.length];
+      const used=assignedH(ds)+created.filter(t=>t.date===ds).reduce((a,t)=>a+(+t.hours||0),0);
+      const freeH=dayHOfStr(ds);
+      const recTasksOnDay=(dayTaskCount[ds]||0);
+      // Max 1 recurrent task per day from this cycle, and must have capacity
+      if(recTasksOnDay===0&&(freeH===0||used+r.hours<=freeH)){
+        assigned=ds;break;
+      }
+    }
+    // Fallback: just spread evenly even if over capacity
+    if(!assigned) assigned=workingDays[i%workingDays.length];
+
+    dayTaskCount[assigned]=(dayTaskCount[assigned]||0)+1;
+    const t={
       id:'t'+Date.now()+i,client:c.id,name:r.name,priority:2,
-      date:assignDate,deadline:'',hours:r.hours,
+      date:assigned,deadline:'',hours:r.hours,
       notes:`Recurrente período ${r.fromDay}–${r.toDay}`,
       status:'sin empezar',timeLogs:[],createdAt:Date.now()+i
-    });
+    };
+    created.push(t);
   });
+
+  tasks.push(...created);
   save();
-  alert(`${targets.length} tarea${targets.length!==1?'s':''} creada${targets.length!==1?'s':''} para ${assignDate}`);
-  showView('hoy');
+
+  // Show distribution summary
+  const summary=created.map(t=>`${clientById(t.client).name} → ${t.date}`).join('\n');
+  alert(`${created.length} tareas creadas y distribuidas:\n\n${summary}`);
+  showView('semana');
 }
 
 // ─── AGENCY ─────────────────────────────────────────────
@@ -1181,7 +1220,7 @@ function showView(name){
   if(name==='todas')renderAll();
   if(name==='recurrentes')renderRecurrents();
   if(name==='agencia')renderAgency();
-  if(name==='ajustes')renderScheduleEditor();
+  if(name==='ajustes'){renderScheduleEditor();}
   if(name==='aprendizaje')renderLearned();
 }
 
@@ -1323,25 +1362,39 @@ Object.assign(SCHEDULE,editableSchedule);
 
 function renderScheduleEditor(){
   const ed=document.getElementById('schedule-editor');if(!ed)return;
+
+  // Weekly summary cards
+  const sum=document.getElementById('schedule-summary');
+  if(sum){
+    sum.innerHTML=[1,2,3,4,5,6,0].map(dow=>{
+      const slots=editableSchedule[dow]||[];
+      const totalH=slots.reduce((a,s)=>a+slotH(s),0);
+      const color=totalH>=6?'var(--green)':totalH>=3?'var(--amber)':totalH>0?'var(--text2)':'var(--text3)';
+      return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 8px;text-align:center">
+        <div style="font-size:10px;color:var(--text3);font-family:var(--fh);font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">${DNS[dow]}</div>
+        <div style="font-size:18px;font-weight:700;font-family:var(--fh);color:${color}">${totalH.toFixed(1)}</div>
+        <div style="font-size:10px;color:var(--text3)">horas</div>
+        <div style="margin-top:6px;display:flex;flex-direction:column;gap:2px">${slots.map(s=>`<div style="font-size:9px;color:var(--text3);background:var(--bg4);border-radius:3px;padding:1px 4px">${s.s}–${s.e}</div>`).join('')}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Editor rows
   ed.innerHTML=[1,2,3,4,5,6,0].map(dow=>{
     const slots=editableSchedule[dow]||[];
     const totalH=slots.reduce((a,s)=>a+slotH(s),0);
+    const barColor=totalH>=6?'var(--green)':totalH>=3?'var(--amber)':'var(--text3)';
     const slotsHtml=slots.map((sl,i)=>`
       <div class="sched-slot">
         <input type="time" value="${sl.s}" onchange="updateSlot(${dow},${i},'s',this.value)">
         <span style="color:var(--text3)">–</span>
-        <input type="time" value="${sl.e==='00:00'?'00:00':sl.e}" onchange="updateSlot(${dow},${i},'e',this.value)">
+        <input type="time" value="${sl.e}" onchange="updateSlot(${dow},${i},'e',this.value)">
         <button class="rm" onclick="removeSlot(${dow},${i})">×</button>
       </div>`).join('');
-    const barPct=Math.min(100,Math.round(totalH/12*100));
-    const barColor=totalH>6?'var(--green)':totalH>3?'var(--amber)':'var(--text3)';
     return `<div class="sched-row">
-      <div>
+      <div style="min-width:90px">
         <span class="sched-day">${DN[dow]}</span>
-        <div style="font-size:10px;color:${barColor};margin-top:2px">${totalH.toFixed(1)}h disponibles</div>
-        <div style="width:60px;height:3px;background:var(--bg4);border-radius:2px;margin-top:3px;overflow:hidden">
-          <div style="width:${barPct}%;height:100%;background:${barColor};border-radius:2px"></div>
-        </div>
+        <div style="font-size:11px;font-weight:600;color:${barColor};margin-top:2px">${totalH.toFixed(1)}h libres</div>
       </div>
       <div class="sched-slots">
         ${slotsHtml}
