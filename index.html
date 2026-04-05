@@ -290,8 +290,6 @@ h3{font-family:var(--fh);font-size:10px;font-weight:600;color:var(--text2);text-
   <button class="nav-item" onclick="showView('agencia')"><span class="icon">⊡</span>Agencia<span class="nav-cnt" id="cn-ag" style="display:none">0</span></button>
   <div class="nav-lbl">Sistema</div>
   <button class="nav-item" onclick="showView('tiempos')"><span class="icon">◷</span>Tiempos</button>
-  <div class="nav-lbl" style="margin-top:auto">Clientes</div>
-  <div id="sb-clients"></div>
 </nav>
 
 <main class="main">
@@ -545,6 +543,7 @@ const pad=n=>String(n).padStart(2,'0');
 const todayStr=()=>new Date().toISOString().slice(0,10);
 const clientById=id=>CLIENTS.find(c=>c.id===id)||{name:id,color:'#888'};
 const norm=s=>s.toLowerCase().replace(/[^a-záéíóúñ0-9 ]/g,'').trim().slice(0,50);
+function formatDate(s){if(!s)return'';const[y,m,d]=s.split('-');return`${d}/${m}/${y}`}
 
 function dateStr(d){return`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`}
 function dowOf(str){const[y,m,d]=str.split('-').map(Number);return new Date(y,m-1,d).getDay()}
@@ -715,12 +714,14 @@ function renderCalendar(){
       </div>`;
     }).join('');
   } else {
-    // Day mode
-    const today=new Date();
-    today.setDate(today.getDate()+calOffset);
-    const ds=dateStr(today);
-    const dow=today.getDay();
-    document.getElementById('cal-title').textContent=`${DN[dow]} ${today.getDate()} de ${MN[today.getMonth()]} ${today.getFullYear()}`;
+    // Day mode — calOffset = days from today
+    const base=new Date();
+    base.setDate(base.getDate()+calOffset);
+    // Skip weekends
+    while(base.getDay()===0||base.getDay()===6)base.setDate(base.getDate()+(calOffset>=0?1:-1));
+    const ds=dateStr(base);
+    const dow=base.getDay();
+    document.getElementById('cal-title').textContent=`${DN[dow]} ${base.getDate()} de ${MN[base.getMonth()]} ${base.getFullYear()}`;
     calWeek.style.display='none';
     selectedDay=ds;
   }
@@ -824,7 +825,7 @@ function taskRowHTML(t){
         <span class="tag tag-c"><span class="cdot" style="background:${c.color}"></span>${c.name}</span>
         <span class="sbadge ${sc[t.status]||'s0'}">${sl[t.status]||t.status}</span>
         <span class="tag tag-h">${t.hours}h${avg?` · hist.${avg.toFixed(1)}h`:''}</span>
-        ${t.deadline?`<span class="tag tag-dl">↗ ${t.deadline}</span>`:''}
+        ${t.deadline?`<span class="tag tag-dl">↗ ${formatDate(t.deadline)}</span>`:''}
       </div>
     </div>
     <div class="tacts">${acts}</div>
@@ -859,8 +860,10 @@ function renderKanban(){
           <span class="tag tag-c" style="font-size:10px"><span class="cdot" style="background:${c.color}"></span>${c.name}</span>
           <span class="pnum ${pc}" style="width:16px;height:16px;font-size:9px">${t.priority}</span>
           <span class="tag tag-h" style="font-size:10px">${t.hours}h</span>
-          ${t.date?`<span class="tag tag-h" style="font-size:10px">📅 ${t.date}</span>`:''}
+          ${t.date?`<span class="tag tag-h" style="font-size:10px">📅 ${formatDate(t.date)}</span>`:''}
+          ${t.deadline?`<span class="tag tag-dl" style="font-size:10px">↗ ${formatDate(t.deadline)}</span>`:''}
         </div>
+        ${t.notes?`<div style="font-size:11px;color:var(--text3);margin-top:4px;padding-top:4px;border-top:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.notes}</div>`:''}
       </div>`;
     }).join('')||`<div style="font-size:12px;color:var(--text3);text-align:center;padding:20px 10px">Sin tareas</div>`;
   });
@@ -944,16 +947,22 @@ function openMeetingNotes(encodedKey,encodedTitle){
             <input type="text" id="mt-task-name" placeholder="Ej: Preparar propuesta de contenidos">
           </div>
         </div>
-        <div class="fr fr3">
+        <div class="fr fr4">
           <div class="field"><label>Prioridad</label>
             <select id="mt-prio"><option value="1">🔴 Crítico</option><option value="2" selected>🟡 Importante</option><option value="3">🟢 Normal</option></select>
           </div>
           <div class="field"><label>Fecha para hacer</label>
             <input type="date" id="mt-date" value="${dateS}">
           </div>
+          <div class="field"><label>Límite al cliente</label>
+            <input type="date" id="mt-deadline">
+          </div>
           <div class="field"><label>Horas est.</label>
             <input type="number" id="mt-hours" min="0.5" step="0.5" value="1">
           </div>
+        </div>
+        <div class="field"><label>Notas</label>
+          <textarea id="mt-notes" placeholder="Contexto, próximos pasos..." style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px;padding:6px 10px;font-family:var(--fb);min-height:50px;resize:vertical"></textarea>
         </div>
         <button class="btn-primary" onclick="createTaskFromMeeting('${encodeURIComponent(key)}')" style="max-width:220px">Crear tarea vinculada →</button>
       </div>
@@ -973,8 +982,9 @@ function createTaskFromMeeting(encodedKey){
     id:'t'+Date.now(),client,name,
     priority:+document.getElementById('mt-prio').value,
     date:document.getElementById('mt-date').value||todayStr(),
-    deadline:'',hours:+document.getElementById('mt-hours').value||1,
-    notes:`Generada desde reunión: ${key.split('::')[1]||''}`,
+    deadline:document.getElementById('mt-deadline').value||'',
+    hours:+document.getElementById('mt-hours').value||1,
+    notes:document.getElementById('mt-notes').value.trim()||`Generada desde reunión: ${key.split('::')[1]||''}`,
     status:'sin empezar',timeLogs:[],createdAt:Date.now(),
     meetingKey:key
   };
@@ -1356,16 +1366,12 @@ function resetSchedule(){if(!confirm('¿Restaurar horarios por defecto?'))return
 
 // ─── SIDEBAR ────────────────────────────────────────────
 function renderSidebar(){
-  document.getElementById('sb-clients').innerHTML=CLIENTS.map(c=>{
-    const n=tasks.filter(t=>t.client===c.id&&t.status!=='listo').length;
-    return `<button class="nav-item" onclick="filterClient('${c.id}')">
-      <span class="cdot" style="background:${c.color}"></span>
-      <span style="flex:1;text-align:left">${c.name.split(' ')[0]}</span>
-      ${n>0?`<span class="nav-cnt">${n}</span>`:''}
-    </button>`;
-  }).join('');
+  // Sidebar clients section removed per user request
+  // Update nav counters only
+  const total=tasks.filter(t=>t.status!=='listo').length;
+  const cnKb=document.getElementById('cn-kb');
+  if(cnKb){cnKb.textContent=total;cnKb.style.display=total>0?'':'none'}
 }
-function filterClient(cid){document.getElementById('kb-client').value=cid;showView('kanban')}
 
 function initSelects(){
   ['n-client','kb-client','r-client','lrn-client'].forEach(sid=>{
