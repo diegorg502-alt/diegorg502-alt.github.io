@@ -272,6 +272,8 @@ h3{font-family:var(--fh);font-size:10px;font-weight:600;color:var(--text2);text-
       <button class="tbtn" style="background:var(--red);color:#fff;margin-left:2px" onclick="stopTimer()">■</button>
       <button class="tbtn tbtn-cancel" onclick="cancelTimer()">✕</button>
     </div>
+    <button class="gcal-btn" onclick="exportData()" title="Exportar copia de seguridad">↓ Backup</button>
+    <label class="gcal-btn" style="cursor:pointer" title="Restaurar copia de seguridad">↑ Restaurar<input type="file" accept=".json" style="display:none" onchange="importData(this.files[0])"></label>
     <button class="gcal-btn" id="gcal-btn" onclick="gcalAuth()">
       <span class="gcal-icon"></span><span id="gcal-label">Conectar Calendar</span>
     </button>
@@ -522,21 +524,92 @@ function dayH(dow){return(SCHEDULE[dow]||[]).reduce((a,s)=>a+slotH(s),0)}
 const LS=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}};
 const SS=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 
-let tasks=LS('dg4_tasks',[]);
-let recs=LS('dg4_recs',[]);
-let agency=LS('dg4_agency',[]);
-let learned=LS('dg4_learned',{});
-let meetingNotes=LS('dg4_meeting_notes',{});// key: eventId or "date::title", val: {notes, pending:[]}
+// PERMANENT keys — never change these again
+const KEY_TASKS='diego_os_tasks';
+const KEY_RECS='diego_os_recs';
+const KEY_AGENCY='diego_os_agency';
+const KEY_LEARNED='diego_os_learned';
+const KEY_NOTES='diego_os_notes';
+const KEY_SCHEDULE='diego_os_schedule';
 
-let editableSchedule=LS('dg4_schedule',JSON.parse(JSON.stringify(DEFAULT_SCHEDULE)));
+// Migration: recover data from any previous version keys
+function migrateFromOldKeys(){
+  const oldVersions=[
+    {tasks:'dg_tasks',recs:'dg_rec',agency:'dg_agency',learned:'dg_learned'},
+    {tasks:'dg2_tasks',recs:'dg2_rec',agency:'dg2_agency',learned:'dg2_learned'},
+    {tasks:'dg3_tasks',recs:'dg3_recs',agency:'dg3_agency',learned:'dg3_learned',notes:'dg3_meeting_notes',schedule:'dg3_schedule'},
+    {tasks:'dg4_tasks',recs:'dg4_recs',agency:'dg4_agency',learned:'dg4_learned',notes:'dg4_meeting_notes',schedule:'dg4_schedule'},
+  ];
+  let migrated=false;
+  for(const v of oldVersions){
+    const oldTasks=LS(v.tasks,[]);
+    const oldAgency=LS(v.agency||'',[]);
+    const oldLearned=LS(v.learned||{},{});
+    if(oldTasks.length>0){
+      // Only migrate if current permanent store is empty
+      if(LS(KEY_TASKS,[]).length===0){
+        SS(KEY_TASKS,oldTasks);
+        console.log(`Migrated ${oldTasks.length} tasks from ${v.tasks}`);
+        migrated=true;
+      }
+    }
+    if(oldAgency.length>0&&LS(KEY_AGENCY,[]).length===0){
+      SS(KEY_AGENCY,oldAgency);migrated=true;
+    }
+    if(Object.keys(oldLearned).length>0&&Object.keys(LS(KEY_LEARNED,{})).length===0){
+      SS(KEY_LEARNED,oldLearned);migrated=true;
+    }
+    if(v.notes){const n=LS(v.notes,{});if(Object.keys(n).length>0&&Object.keys(LS(KEY_NOTES,{})).length===0){SS(KEY_NOTES,n);migrated=true}}
+    if(v.schedule){const s=LS(v.schedule,null);if(s&&!LS(KEY_SCHEDULE,null)){SS(KEY_SCHEDULE,s);migrated=true}}
+  }
+  return migrated;
+}
+
+migrateFromOldKeys();
+
+let tasks=LS(KEY_TASKS,[]);
+let recs=LS(KEY_RECS,[]);
+let agency=LS(KEY_AGENCY,[]);
+let learned=LS(KEY_LEARNED,{});
+let meetingNotes=LS(KEY_NOTES,{});
+
+let editableSchedule=LS(KEY_SCHEDULE,JSON.parse(JSON.stringify(DEFAULT_SCHEDULE)));
 let SCHEDULE=JSON.parse(JSON.stringify(editableSchedule));
 
 if(!recs.length){
   recs=[{id:'r1',name:'Preparar anuncios de publicidad',fromDay:5,toDay:15,hours:4,client:''}];
-  SS('dg4_recs',recs);
+  SS(KEY_RECS,recs);
 }
 
-function save(){SS('dg4_tasks',tasks);SS('dg4_recs',recs);SS('dg4_agency',agency);SS('dg4_learned',learned);SS('dg4_meeting_notes',meetingNotes)}
+function save(){
+  SS(KEY_TASKS,tasks);SS(KEY_RECS,recs);SS(KEY_AGENCY,agency);
+  SS(KEY_LEARNED,learned);SS(KEY_NOTES,meetingNotes);
+}
+
+function exportData(){
+  const data={tasks,recs,agency,learned,meetingNotes,schedule:editableSchedule,exportedAt:new Date().toISOString()};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`diego-os-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+}
+
+function importData(file){
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const data=JSON.parse(e.target.result);
+      if(data.tasks)tasks=data.tasks;
+      if(data.recs)recs=data.recs;
+      if(data.agency)agency=data.agency;
+      if(data.learned)learned=data.learned;
+      if(data.meetingNotes)meetingNotes=data.meetingNotes;
+      if(data.schedule){editableSchedule=data.schedule;Object.assign(SCHEDULE,editableSchedule);SS(KEY_SCHEDULE,editableSchedule)}
+      save();alert(`Datos restaurados: ${tasks.length} tareas, ${agency.length} ideas de agencia.`);refreshAll();showView('calendario');
+    }catch(err){alert('Error al importar: archivo no válido')}
+  };
+  reader.readAsText(file);
+}
 
 // ─── HELPERS ────────────────────────────────────────────
 const pad=n=>String(n).padStart(2,'0');
@@ -1361,8 +1434,8 @@ function renderScheduleEditor(){
 function updateSlot(dow,i,f,v){if(!editableSchedule[dow])editableSchedule[dow]=[];editableSchedule[dow][i][f]=v;renderScheduleEditor()}
 function removeSlot(dow,i){editableSchedule[dow].splice(i,1);renderScheduleEditor()}
 function addSlot(dow){if(!editableSchedule[dow])editableSchedule[dow]=[];editableSchedule[dow].push({s:'10:00',e:'12:00'});renderScheduleEditor()}
-function saveSchedule(){SS('dg4_schedule',editableSchedule);Object.assign(SCHEDULE,editableSchedule);alert('Horarios guardados.');showView('calendario')}
-function resetSchedule(){if(!confirm('¿Restaurar horarios por defecto?'))return;editableSchedule=JSON.parse(JSON.stringify(DEFAULT_SCHEDULE));Object.assign(SCHEDULE,editableSchedule);SS('dg4_schedule',editableSchedule);renderScheduleEditor()}
+function saveSchedule(){SS(KEY_SCHEDULE,editableSchedule);Object.assign(SCHEDULE,editableSchedule);alert('Horarios guardados.');showView('calendario')}
+function resetSchedule(){if(!confirm('¿Restaurar horarios por defecto?'))return;editableSchedule=JSON.parse(JSON.stringify(DEFAULT_SCHEDULE));Object.assign(SCHEDULE,editableSchedule);SS(KEY_SCHEDULE,editableSchedule);renderScheduleEditor()}
 
 // ─── SIDEBAR ────────────────────────────────────────────
 function renderSidebar(){
@@ -1407,7 +1480,7 @@ function refreshAll(){
 // ─── GOOGLE CALENDAR ─────────────────────────────────────
 const CLIENT_ID='17925868051-3prfv5ugc91phbhav1hgjt2kmmv9fke5.apps.googleusercontent.com';
 const SCOPES='https://www.googleapis.com/auth/calendar.readonly';
-let gcalToken=LS('dg4_gcal_token',null);
+let gcalToken=LS('diego_os_gcal_token',null);
 let gcalClient=null;
 
 function gcalAuth(){
@@ -1417,7 +1490,7 @@ function gcalAuth(){
 }
 function gcalDisconnect(){
   if(gcalToken?.token)google.accounts.oauth2.revoke(gcalToken.token,()=>{});
-  gcalToken=null;SS('dg4_gcal_token',null);calEvents=[];calEventsByDay={};
+  gcalToken=null;SS('diego_os_gcal_token',null);calEvents=[];calEventsByDay={};
   updateGcalBtn(false);renderCalendar();
 }
 function initGcalClient(){
@@ -1427,7 +1500,7 @@ function initGcalClient(){
     callback:(resp)=>{
       if(resp.error)return;
       gcalToken={token:resp.access_token,expires:Date.now()+resp.expires_in*1000};
-      SS('dg4_gcal_token',gcalToken);updateGcalBtn(true);fetchCalendarEvents();
+      SS('diego_os_gcal_token',gcalToken);updateGcalBtn(true);fetchCalendarEvents();
     }
   });
 }
@@ -1438,13 +1511,13 @@ function updateGcalBtn(connected){
   else{btn.classList.remove('connected');lbl.textContent='Conectar Calendar'}
 }
 async function fetchCalendarEvents(){
-  if(!gcalToken||Date.now()>gcalToken.expires){gcalToken=null;SS('dg4_gcal_token',null);updateGcalBtn(false);return}
+  if(!gcalToken||Date.now()>gcalToken.expires){gcalToken=null;SS('diego_os_gcal_token',null);updateGcalBtn(false);return}
   const dates=getWeekDates(calOffset);
   const start=new Date(dates[0]+'T00:00:00');
   const end=new Date(dates[4]+'T23:59:59');
   try{
     const res=await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${start.toISOString()}&timeMax=${end.toISOString()}&singleEvents=true&orderBy=startTime&maxResults=100`,{headers:{Authorization:`Bearer ${gcalToken.token}`}});
-    if(!res.ok){if(res.status===401){gcalToken=null;SS('dg4_gcal_token',null);updateGcalBtn(false)}return}
+    if(!res.ok){if(res.status===401){gcalToken=null;SS('diego_os_gcal_token',null);updateGcalBtn(false)}return}
     const data=await res.json();
     const items=(data.items||[]).filter(e=>e.start&&(e.start.dateTime||e.start.date));
     calEventsByDay={};
